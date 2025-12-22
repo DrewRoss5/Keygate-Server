@@ -92,6 +92,30 @@ func login(user_info map[string]User, auth_tokens map[string]AuthToken, token_mu
 	}
 }
 
+// logs a user out
+func logout(users map[string]User, auth_tokens map[string]AuthToken, key_cache map[string]rsa.PublicKey, token_mut *sync.Mutex, key_mut *sync.Mutex) func(http.ResponseWriter, *http.Request) {
+	return func(w http.ResponseWriter, req *http.Request) {
+		if req.Method != http.MethodPost {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		status_code, err := authorize_user(auth_tokens, key_cache, token_mut, key_mut, req)
+		if err != nil {
+			w.WriteHeader(status_code)
+			w.Write([]byte(err.Error()))
+			return
+		}
+		// we don't need to verify this exists, as it must've been used by the previous function
+		username := req.Header.Get("username")
+		token_mut.Lock()
+		delete(auth_tokens, username)
+		token_mut.Unlock()
+		key_mut.Lock()
+		delete(key_cache, username)
+		key_mut.Unlock()
+	}
+}
+
 func auth_test(auth_tokens map[string]AuthToken, key_cache map[string]rsa.PublicKey, token_mut *sync.Mutex, key_mut *sync.Mutex) func(http.ResponseWriter, *http.Request) {
 	return func(w http.ResponseWriter, req *http.Request) {
 		if req.Method != http.MethodPost {
@@ -261,6 +285,7 @@ func RunServer(cert_path string, key_path string) error {
 
 	// handler functions
 	http.HandleFunc("/login", login(users, auth_tokens, &token_mut))
+	http.HandleFunc("/logout", logout(users, auth_tokens, key_cache, &token_mut, &key_mut))
 	http.HandleFunc("/auth_test", auth_test(auth_tokens, key_cache, &token_mut, &key_mut))
 	http.HandleFunc("/upload", file_upload(users, auth_tokens, key_cache, &token_mut, &key_mut))
 	http.HandleFunc("/download", file_download(users, auth_tokens, key_cache, &token_mut, &key_mut))
