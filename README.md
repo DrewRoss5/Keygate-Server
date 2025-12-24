@@ -15,11 +15,11 @@ design and implementation have not undergone independent or professional securit
 ## 📖 Current Features
 - Single-File Uploads
 - Single-File Downloads
+- Explicit Directory Creation
 
 ## 🌱 Roadmap/Planned Development 
 - API Documentation
 - Single File Deletion
-- Explicit Directory Creation
 - Directory Uploads
 - Directory Downloads
 - Support for larger file sizes
