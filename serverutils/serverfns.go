@@ -241,6 +241,46 @@ func file_download(users map[string]User, auth_tokens map[string]AuthToken, key_
 	}
 }
 
+func mkdir(users map[string]User, auth_tokens map[string]AuthToken, key_cache map[string]rsa.PublicKey, token_mut *sync.Mutex, key_mut *sync.Mutex) func(http.ResponseWriter, *http.Request) {
+	return func(w http.ResponseWriter, req *http.Request) {
+		if req.Method != http.MethodPost {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		// validate the provided username and authtoken
+		status_code, err := authorize_user(auth_tokens, key_cache, token_mut, key_mut, req)
+		if err != nil {
+			w.WriteHeader(status_code)
+			w.Write([]byte(err.Error()))
+			return
+		}
+		// ensure the directory name is provided
+		dir_name := req.Header.Get("dir_name")
+		if dir_name == "" {
+			w.WriteHeader(http.StatusBadGateway)
+			w.Write([]byte("missing directory name"))
+			return
+		}
+		// ensure the request isn't escalation
+		if strings.Contains(dir_name, "..") || strings.Contains(dir_name, "~") {
+			w.WriteHeader(http.StatusBadRequest)
+			w.Write([]byte("invalid directory name"))
+			return
+		}
+		user := users[req.Header.Get("username")]
+		dir_path := fmt.Sprintf("%v/files/%v", user.Path, dir_name)
+		// check if the directory already exists
+		_, err = os.Stat(dir_path)
+		if err == nil {
+			w.WriteHeader(http.StatusBadRequest)
+			w.Write([]byte("directory already exists"))
+			return
+		}
+		os.MkdirAll(dir_path, 0755)
+
+	}
+}
+
 // locking goroutine that deletes a specified key from the key cache
 func delete_key(key_cache map[string]rsa.PublicKey, username string, mut *sync.Mutex) {
 	mut.Lock()
@@ -289,6 +329,7 @@ func RunServer(cert_path string, key_path string) error {
 	http.HandleFunc("/auth_test", auth_test(auth_tokens, key_cache, &token_mut, &key_mut))
 	http.HandleFunc("/upload", file_upload(users, auth_tokens, key_cache, &token_mut, &key_mut))
 	http.HandleFunc("/download", file_download(users, auth_tokens, key_cache, &token_mut, &key_mut))
+	http.HandleFunc("/mkdir", mkdir(users, auth_tokens, key_cache, &token_mut, &key_mut))
 
 	err = http.ListenAndServeTLS(":8080", cert_path, key_path, nil) // use nil for default handler
 	if err != nil {
