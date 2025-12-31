@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"path"
 	"strings"
 	"sync"
 	"time"
@@ -28,6 +29,16 @@ type User struct {
 type AuthToken struct {
 	Token     string
 	Timestamp int64
+}
+
+// wraps a file's path, both by making it "safe" (unable to go outside of the keygate directory), and prepending it with the user's keygate path
+// returns an error if a deliberate attack is detected
+func wrap_path(file_path string, user_path string) (string, error) {
+	if path.IsAbs(file_path) || strings.Contains(file_path, "..") || strings.Contains(file_path, "~") {
+		return "", fmt.Errorf("invalid file path")
+	}
+	file_path = path.Clean(file_path)
+	return fmt.Sprintf("%v/keygate/files/%v", user_path, file_path), nil
 }
 
 func authorize_user(auth_tokens map[string]AuthToken, key_cache map[string]rsa.PublicKey, token_mut *sync.Mutex, key_mut *sync.Mutex, req *http.Request) (int, error) {
@@ -93,7 +104,7 @@ func login(user_info map[string]User, auth_tokens map[string]AuthToken, token_mu
 }
 
 // logs a user out
-func logout(users map[string]User, auth_tokens map[string]AuthToken, key_cache map[string]rsa.PublicKey, token_mut *sync.Mutex, key_mut *sync.Mutex) func(http.ResponseWriter, *http.Request) {
+func logout(auth_tokens map[string]AuthToken, key_cache map[string]rsa.PublicKey, token_mut *sync.Mutex, key_mut *sync.Mutex) func(http.ResponseWriter, *http.Request) {
 	return func(w http.ResponseWriter, req *http.Request) {
 		if req.Method != http.MethodPost {
 			w.WriteHeader(http.StatusMethodNotAllowed)
@@ -144,15 +155,19 @@ func file_upload(users map[string]User, auth_tokens map[string]AuthToken, key_ca
 			w.Write([]byte(err.Error()))
 			return
 		}
+		username := req.Header.Get("username")
+		user := users[username]
 		// validate the file request
-		file_name := req.Header.Get("filename")
-		if file_name == "" {
+		tmp_name := req.Header.Get("filename")
+		file_name, err := wrap_path(tmp_name, user.Path)
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			w.Write([]byte("invalid file path"))
+			return
+		}
+		if file_name == "." {
 			w.WriteHeader(http.StatusBadRequest)
 			w.Write([]byte("missing file name"))
-			return
-		} else if strings.Contains(file_name, "..") || strings.Contains(file_name, "~") { // we check for two dots to ensure that path isn't an injection trying to move up directories
-			w.WriteHeader(http.StatusBadRequest)
-			w.Write([]byte("invalid file name"))
 			return
 		}
 		// read the file content
@@ -169,8 +184,6 @@ func file_upload(users map[string]User, auth_tokens map[string]AuthToken, key_ca
 		}
 		// get the user's public key and path
 		key_mut.Lock()
-		username := req.Header.Get("username")
-		user := users[username]
 		pub_key, ok := key_cache[username]
 		if !ok {
 			pub_key, err = cryptoutils.ImportRsaPubFile(user.Path + "/keygate/pub.pem")
@@ -183,7 +196,6 @@ func file_upload(users map[string]User, auth_tokens map[string]AuthToken, key_ca
 		}
 		key_mut.Unlock()
 		// store the file to the user's path
-		file_name = fmt.Sprintf("%v/keygate/files/%v", user.Path, file_name)
 		path_segments := strings.Split(file_name, "/")
 		directory := strings.Join(path_segments[:(len(path_segments)-1)], "/")
 		// create the directory
@@ -220,18 +232,19 @@ func file_download(users map[string]User, auth_tokens map[string]AuthToken, key_
 		}
 		user := users[req.Header.Get("username")]
 		// validate the file path
-		file_name := req.Header.Get("filename")
-		if file_name == "" {
+		tmp_name := req.Header.Get("filename")
+		file_name, err := wrap_path(tmp_name, user.Path)
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			w.Write([]byte("invalid file path"))
+			return
+		}
+		if file_name == "." {
 			w.WriteHeader(http.StatusBadRequest)
 			w.Write([]byte("missing file name"))
 			return
-		} else if strings.Contains(file_name, "..") || strings.Contains(file_name, "~") {
-			w.WriteHeader(http.StatusBadRequest)
-			w.Write([]byte("invalid file name"))
-			return
 		}
-		path := fmt.Sprintf("%v/keygate/files/%v", user.Path, file_name)
-		file_content, err := os.ReadFile(path)
+		file_content, err := os.ReadFile(file_name)
 		if err != nil {
 			w.WriteHeader(http.StatusBadRequest)
 			w.Write([]byte("could not read the requested file. does it exist?"))
@@ -255,29 +268,80 @@ func mkdir(users map[string]User, auth_tokens map[string]AuthToken, key_cache ma
 			return
 		}
 		// ensure the directory name is provided
-		dir_name := req.Header.Get("dir_name")
-		if dir_name == "" {
-			w.WriteHeader(http.StatusBadGateway)
-			w.Write([]byte("missing directory name"))
-			return
-		}
-		// ensure the request isn't escalation
-		if strings.Contains(dir_name, "..") || strings.Contains(dir_name, "~") {
+		username := req.Header.Get("username")
+		user := users[username]
+		// validate the file request
+		tmp_name := req.Header.Get("filename")
+		dir_name, err := wrap_path(tmp_name, user.Path)
+		if err != nil {
 			w.WriteHeader(http.StatusBadRequest)
-			w.Write([]byte("invalid directory name"))
+			w.Write([]byte("invalid file path"))
 			return
 		}
-		user := users[req.Header.Get("username")]
-		dir_path := fmt.Sprintf("%v/files/%v", user.Path, dir_name)
-		// check if the directory already exists
-		_, err = os.Stat(dir_path)
+		if dir_name == "." {
+			w.WriteHeader(http.StatusBadRequest)
+			w.Write([]byte("missing file name"))
+			return
+		}
+		_, err = os.Stat(dir_name)
 		if err == nil {
 			w.WriteHeader(http.StatusBadRequest)
 			w.Write([]byte("directory already exists"))
 			return
 		}
-		os.MkdirAll(dir_path, 0755)
+		os.MkdirAll(dir_name, 0755)
 
+	}
+}
+
+func list_dir(users map[string]User, auth_tokens map[string]AuthToken, key_cache map[string]rsa.PublicKey, token_mut *sync.Mutex, key_mut *sync.Mutex) func(http.ResponseWriter, *http.Request) {
+	return func(w http.ResponseWriter, req *http.Request) {
+		if req.Method != http.MethodGet {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		// validate the provided username and authtoken
+		status_code, err := authorize_user(auth_tokens, key_cache, token_mut, key_mut, req)
+		if err != nil {
+			w.WriteHeader(status_code)
+			w.Write([]byte(err.Error()))
+			return
+		}
+		user := users[req.Header.Get("username")]
+		// validate the file request
+		tmp_name := req.Header.Get("filename")
+		dir_name, err := wrap_path(tmp_name, user.Path)
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			w.Write([]byte("invalid file path"))
+			return
+		}
+		if dir_name == "." {
+			w.WriteHeader(http.StatusBadRequest)
+			w.Write([]byte("missing file name"))
+			return
+		}
+		dir_path := fmt.Sprintf("%v/keygate/files/%v", user.Path, dir_name)
+		// ensure the directory exists, and list it's contents if so
+		file_info, err := os.Stat(dir_path)
+		if err != nil || !file_info.IsDir() {
+			w.WriteHeader(http.StatusBadRequest)
+			w.Write([]byte("invalid path"))
+			return
+		}
+		entries, err := os.ReadDir(dir_path)
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			w.Write([]byte("internal server error"))
+			return
+		}
+		// create a list of all entries, followed by a boolean representing if they're a directory
+		dir_list := make(map[string]bool)
+		for _, entry := range entries {
+			dir_list[entry.Name()] = entry.IsDir()
+		}
+		json_response, _ := json.Marshal(dir_list)
+		w.Write(json_response)
 	}
 }
 
@@ -325,11 +389,12 @@ func RunServer(cert_path string, key_path string) error {
 
 	// handler functions
 	http.HandleFunc("/login", login(users, auth_tokens, &token_mut))
-	http.HandleFunc("/logout", logout(users, auth_tokens, key_cache, &token_mut, &key_mut))
+	http.HandleFunc("/logout", logout(auth_tokens, key_cache, &token_mut, &key_mut))
 	http.HandleFunc("/auth_test", auth_test(auth_tokens, key_cache, &token_mut, &key_mut))
 	http.HandleFunc("/upload", file_upload(users, auth_tokens, key_cache, &token_mut, &key_mut))
 	http.HandleFunc("/download", file_download(users, auth_tokens, key_cache, &token_mut, &key_mut))
 	http.HandleFunc("/mkdir", mkdir(users, auth_tokens, key_cache, &token_mut, &key_mut))
+	http.HandleFunc("/ls", list_dir(users, auth_tokens, key_cache, &token_mut, &key_mut))
 
 	err = http.ListenAndServeTLS(":8080", cert_path, key_path, nil) // use nil for default handler
 	if err != nil {
