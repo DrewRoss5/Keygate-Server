@@ -2,7 +2,7 @@
 The server component of the KeyGate project.
 
 ## 🗝️ What is KeyGate?
-KeyGate aims to be a self-hosted end-to-end encrypted file vault. Built to run on Linux using limited hardware such as a Raspberry Pi.
+KeyGate aims to be a self-hosted end-to-end encrypted file vault. Built to run on Linux using limited hardware such as a Raspberry Pi. This server end functions as a file system running over HTTPS.
 
 ## 🔒 Security Notice
 ⚠️ Use with caution — this build has not been independently security audited. ⚠️ 
