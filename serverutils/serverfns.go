@@ -316,11 +316,6 @@ func list_dir(users map[string]User, auth_tokens map[string]AuthToken, key_cache
 			w.Write([]byte("invalid file path"))
 			return
 		}
-		if dir_name == "." {
-			w.WriteHeader(http.StatusBadRequest)
-			w.Write([]byte("missing file name"))
-			return
-		}
 		dir_path := fmt.Sprintf("%v/keygate/files/%v", user.Path, dir_name)
 		// ensure the directory exists, and list it's contents if so
 		file_info, err := os.Stat(dir_path)
@@ -342,6 +337,45 @@ func list_dir(users map[string]User, auth_tokens map[string]AuthToken, key_cache
 		}
 		json_response, _ := json.Marshal(dir_list)
 		w.Write(json_response)
+	}
+}
+
+// handles the "rm" command, the function name is a slight misnomer, as it can delete folders in addition to files.
+func delete_file(users map[string]User, auth_tokens map[string]AuthToken, key_cache map[string]rsa.PublicKey, token_mut *sync.Mutex, key_mut *sync.Mutex) func(http.ResponseWriter, *http.Request) {
+	return func(w http.ResponseWriter, req *http.Request) {
+		if req.Method != http.MethodPost {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		// validate the provided username and authtoken
+		status_code, err := authorize_user(auth_tokens, key_cache, token_mut, key_mut, req)
+		if err != nil {
+			w.WriteHeader(status_code)
+			w.Write([]byte(err.Error()))
+			return
+		}
+		// get the file path to delete
+		user := users[req.Header.Get("username")]
+		tmp_path := req.Header.Get("filepath")
+		file_path, err := wrap_path(tmp_path, user.Path)
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			w.Write([]byte("invalid file path"))
+			return
+		}
+		if file_path == "." {
+			w.WriteHeader(http.StatusBadRequest)
+			w.Write([]byte("missing file path"))
+			return
+		}
+		// remove the chosen path
+		err = os.RemoveAll(file_path)
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			w.Write([]byte("failed to complete the file deletion request"))
+			return
+		}
+
 	}
 }
 
@@ -395,6 +429,7 @@ func RunServer(cert_path string, key_path string) error {
 	http.HandleFunc("/download", file_download(users, auth_tokens, key_cache, &token_mut, &key_mut))
 	http.HandleFunc("/mkdir", mkdir(users, auth_tokens, key_cache, &token_mut, &key_mut))
 	http.HandleFunc("/ls", list_dir(users, auth_tokens, key_cache, &token_mut, &key_mut))
+	http.HandleFunc("/rm", delete_file(users, auth_tokens, key_cache, &token_mut, &key_mut))
 
 	err = http.ListenAndServeTLS(":8080", cert_path, key_path, nil) // use nil for default handler
 	if err != nil {
